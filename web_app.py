@@ -9,7 +9,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Optional, Dict, Any, List
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Query, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -22,6 +22,36 @@ DOWNLOAD_DIR = BASE_DIR / "downloads"
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 WEBSITE_DIR = BASE_DIR / "website"
 WEBSITE_DIR.mkdir(parents=True, exist_ok=True)
+DATA_DIR = BASE_DIR / "data"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+CONFIG_FILE = DATA_DIR / "terabox_config.json"
+
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "Rohit-admin5064@")
+ADMIN_TOKEN = "DownTG_Admin_Token_Rohit5064"
+
+
+def load_admin_config() -> Dict[str, Any]:
+    cfg = {
+        "terabox_api_key": os.getenv("TERABOX_API_KEY", ""),
+        "terabox_endpoint": os.getenv("TERABOX_ENDPOINT", "https://gregarious-haupia-5bced4.netlify.app/api/extract"),
+    }
+    if CONFIG_FILE.exists():
+        try:
+            stored = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+            if isinstance(stored, dict):
+                cfg.update(stored)
+        except Exception:
+            pass
+    return cfg
+
+
+def save_admin_config(cfg: Dict[str, Any]):
+    CONFIG_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    if "terabox_api_key" in cfg and cfg["terabox_api_key"]:
+        os.environ["TERABOX_API_KEY"] = cfg["terabox_api_key"]
+    if "terabox_endpoint" in cfg and cfg["terabox_endpoint"]:
+        os.environ["TERABOX_ENDPOINT"] = cfg["terabox_endpoint"]
 
 # Path to TeraBox Scraper
 TERABOX_SCRAPER = BASE_DIR / "terabox_scraper.js"
@@ -55,6 +85,17 @@ app.add_middleware(
 
 class ExtractRequest(BaseModel):
     url: str
+
+
+class AdminLoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class AdminConfigRequest(BaseModel):
+    terabox_api_key: Optional[str] = None
+    terabox_endpoint: Optional[str] = None
+    cookies_text: Optional[str] = None
 
 
 TERABOX_DOMAINS = [
@@ -129,6 +170,19 @@ def format_bytes(size: Optional[int]) -> str:
     return f"{size:.1f} TB"
 
 
+def get_valid_cookie_file(candidates: List[Path], domain_keyword: str) -> Optional[str]:
+    """Validates that a cookie file actually contains cookies for the target domain."""
+    for cp in candidates:
+        if cp.exists() and cp.is_file() and cp.stat().st_size > 0:
+            try:
+                content = cp.read_text(encoding="utf-8", errors="ignore")
+                if domain_keyword.lower() in content.lower():
+                    return str(cp)
+            except Exception:
+                continue
+    return None
+
+
 def get_ydl_opts_for_url(
     url: str,
     quality: str = "best",
@@ -158,9 +212,9 @@ def get_ydl_opts_for_url(
         'concurrent_fragment_downloads': 16,
         'buffersize': 1024 * 1024 * 16,
         'http_chunk_size': 20 * 1024 * 1024,
-        'retries': 15,
-        'fragment_retries': 15,
-        'socket_timeout': 45,
+        'retries': 5,
+        'fragment_retries': 5,
+        'socket_timeout': 15 if not download else 45,
     }
 
     # Locate FFmpeg binary
@@ -189,28 +243,28 @@ def get_ydl_opts_for_url(
         opts['js_runtimes'] = {'node': {'path': str(node_bin)}}
 
     # Platform-specific options & cookies:
-    # 1. YouTube (Uses android & ios InnerTube clients to bypass cloud bot detection & player response blocks)
+    # 1. YouTube (Uses modern mweb/web client and verifies cookies belong to youtube.com)
     if "youtube.com" in u_lower or "youtu.be" in u_lower:
         opts['extractor_args'] = {
             'youtube': {
-                'player_client': ['android', 'ios'],
-                'player_skip': ['webpage', 'configs'],
+                'player_client': ['mweb', 'web'],
             }
         }
         cookie_candidates = [
-            BASE_DIR / "cookies.txt",
+            BASE_DIR / "youtube_cookies.txt",
             BASE_DIR / "cooky" / "youtube" / "cookies.txt",
-            BASE_DIR.parent / "DownTG-Bot" / "cookies.txt",
+            BASE_DIR / "cookies.txt",
             BASE_DIR.parent / "DownTG-Bot" / "cooky" / "youtube" / "cookies.txt",
-            BASE_DIR.parent / "DownTG-Bot" / "cooky" / "cookies.txt",
+            BASE_DIR.parent / "DownTG-Bot" / "cookies.txt",
         ]
-        for cp in cookie_candidates:
-            if cp.exists() and cp.is_file() and cp.stat().st_size > 0:
-                opts['cookiefile'] = str(cp)
-                logger.info(f"Using YouTube cookies: {cp}")
-                break
+        valid_cookie = get_valid_cookie_file(cookie_candidates, "youtube.com")
+        if valid_cookie:
+            opts['cookiefile'] = valid_cookie
+            logger.info(f"Using verified YouTube cookies: {valid_cookie}")
+        else:
+            logger.info("No verified YouTube cookies found; proceeding in cookie-free mode.")
 
-    # 2. Instagram (Mobile user agent and isolated cookies)
+    # 2. Instagram (Mobile user agent and verified instagram.com cookies)
     elif "instagram.com" in u_lower:
         opts['http_headers'] = {
             'User-Agent': (
@@ -223,16 +277,15 @@ def get_ydl_opts_for_url(
         }
         cookie_candidates = [
             BASE_DIR / "cookies.txt",
-            BASE_DIR / "cooky" / "instagram" / "cookies.txt",
             BASE_DIR / "instagram_cookies.txt",
+            BASE_DIR / "cooky" / "instagram" / "cookies.txt",
             BASE_DIR.parent / "DownTG-Bot" / "cooky" / "instagram" / "cookies.txt",
             BASE_DIR.parent / "DownTG-Bot" / "cookies.txt",
         ]
-        for cp in cookie_candidates:
-            if cp.exists() and cp.is_file() and cp.stat().st_size > 0:
-                opts['cookiefile'] = str(cp)
-                logger.info(f"Using Instagram cookies: {cp}")
-                break
+        valid_cookie = get_valid_cookie_file(cookie_candidates, "instagram.com")
+        if valid_cookie:
+            opts['cookiefile'] = valid_cookie
+            logger.info(f"Using verified Instagram cookies: {valid_cookie}")
 
     # 3. Facebook
     elif "facebook.com" in u_lower or "fb.watch" in u_lower or "fb.com" in u_lower:
@@ -243,11 +296,10 @@ def get_ydl_opts_for_url(
             BASE_DIR.parent / "DownTG-Bot" / "cooky" / "facebook" / "cookies.txt",
             BASE_DIR.parent / "DownTG-Bot" / "cookies.txt",
         ]
-        for cp in cookie_candidates:
-            if cp.exists() and cp.is_file() and cp.stat().st_size > 0:
-                opts['cookiefile'] = str(cp)
-                logger.info(f"Using Facebook cookies: {cp}")
-                break
+        valid_cookie = get_valid_cookie_file(cookie_candidates, "facebook.com")
+        if valid_cookie:
+            opts['cookiefile'] = valid_cookie
+            logger.info(f"Using verified Facebook cookies: {valid_cookie}")
 
     # 4. Twitter / X
     elif "twitter.com" in u_lower or "x.com" in u_lower:
@@ -258,11 +310,10 @@ def get_ydl_opts_for_url(
             BASE_DIR.parent / "DownTG-Bot" / "cooky" / "twitter" / "cookies.txt",
             BASE_DIR.parent / "DownTG-Bot" / "cookies.txt",
         ]
-        for cp in cookie_candidates:
-            if cp.exists() and cp.is_file() and cp.stat().st_size > 0:
-                opts['cookiefile'] = str(cp)
-                logger.info(f"Using Twitter cookies: {cp}")
-                break
+        valid_cookie = get_valid_cookie_file(cookie_candidates, "twitter.com") or get_valid_cookie_file(cookie_candidates, "x.com")
+        if valid_cookie:
+            opts['cookiefile'] = valid_cookie
+            logger.info(f"Using verified Twitter/X cookies: {valid_cookie}")
 
     # 5. Reddit
     elif "reddit.com" in u_lower or "redd.it" in u_lower:
@@ -273,11 +324,10 @@ def get_ydl_opts_for_url(
             BASE_DIR.parent / "DownTG-Bot" / "cooky" / "reddit" / "cookies.txt",
             BASE_DIR.parent / "DownTG-Bot" / "cookies.txt",
         ]
-        for cp in cookie_candidates:
-            if cp.exists() and cp.is_file() and cp.stat().st_size > 0:
-                opts['cookiefile'] = str(cp)
-                logger.info(f"Using Reddit cookies: {cp}")
-                break
+        valid_cookie = get_valid_cookie_file(cookie_candidates, "reddit.com")
+        if valid_cookie:
+            opts['cookiefile'] = valid_cookie
+            logger.info(f"Using verified Reddit cookies: {valid_cookie}")
 
     # 6. TikTok
     elif "tiktok.com" in u_lower:
@@ -288,11 +338,10 @@ def get_ydl_opts_for_url(
             BASE_DIR.parent / "DownTG-Bot" / "cooky" / "tiktok" / "cookies.txt",
             BASE_DIR.parent / "DownTG-Bot" / "cookies.txt",
         ]
-        for cp in cookie_candidates:
-            if cp.exists() and cp.is_file() and cp.stat().st_size > 0:
-                opts['cookiefile'] = str(cp)
-                logger.info(f"Using TikTok cookies: {cp}")
-                break
+        valid_cookie = get_valid_cookie_file(cookie_candidates, "tiktok.com")
+        if valid_cookie:
+            opts['cookiefile'] = valid_cookie
+            logger.info(f"Using verified TikTok cookies: {valid_cookie}")
 
     # Generic cookies fallback
     else:
@@ -341,12 +390,20 @@ async def scrape_terabox_direct(url: str) -> Dict[str, Any]:
     if not TERABOX_SCRAPER.exists():
         raise Exception("TeraBox scraper script not found.")
 
+    cfg = load_admin_config()
+    env = os.environ.copy()
+    if cfg.get("terabox_api_key"):
+        env["TERABOX_API_KEY"] = cfg["terabox_api_key"]
+    if cfg.get("terabox_endpoint"):
+        env["TERABOX_ENDPOINT"] = cfg["terabox_endpoint"]
+
     process = await asyncio.create_subprocess_exec(
         "node",
         str(TERABOX_SCRAPER),
         url,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=env,
     )
     stdout, stderr = await process.communicate()
     raw = stdout.decode("utf-8", errors="ignore").strip()
@@ -421,6 +478,251 @@ def extract_instagram_embed_sync(url: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+INVIDIOUS_INSTANCES = [
+    "https://invidious.nerdvpn.de",
+    "https://inv.nadeko.net",
+    "https://invidious.private.coffee",
+    "https://invidious.projectsegfau.lt",
+    "https://invidious.drgns.space",
+    "https://yt.artemislena.eu",
+    "https://invidious.flokinet.to",
+    "https://inv.bp.projectsegfau.lt",
+    "https://invidious.lunar.icu",
+]
+
+PIPED_INSTANCES = [
+    "https://pipedapi.kavin.rocks",
+    "https://api.piped.privacydev.net",
+    "https://piped-api.lunar.icu",
+    "https://pipedapi.projectsegfau.lt",
+    "https://api.piped.projectsegfau.lt",
+]
+
+COBALT_INSTANCES = [
+    "https://api.cobalt.tools",
+    "https://cobalt-api.kwiatekm.tokyo",
+    "https://cobalt.api.scip.io",
+    "https://api.wuk.sh",
+]
+
+
+def extract_cobalt_fallback(url: str, is_audio: bool = False) -> Optional[Dict[str, Any]]:
+    """Fetches direct video or audio stream via Cobalt API instances."""
+    headers = {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+    }
+    payload = {
+        "url": url,
+        "videoQuality": "1080",
+        "downloadMode": "audio" if is_audio else "auto",
+        "youtubeVideoCodec": "h264"
+    }
+    data = json.dumps(payload).encode('utf-8')
+    for inst in COBALT_INSTANCES:
+        try:
+            req = urllib.request.Request(inst, data=data, headers=headers, method="POST")
+            with urllib.request.urlopen(req, timeout=6) as resp:
+                if resp.status in (200, 201):
+                    res = json.loads(resp.read().decode('utf-8'))
+                    stream_url = res.get("url")
+                    if stream_url:
+                        logger.info(f"Cobalt successfully generated stream URL from {inst}")
+                        return {
+                            "stream_url": stream_url,
+                            "filename": res.get("filename", "video.mp4")
+                        }
+        except Exception:
+            continue
+    return None
+
+
+def extract_youtube_fallback(url_or_id: str) -> Optional[Dict[str, Any]]:
+    """Extracts YouTube metadata and direct stream URLs via Invidious/Piped/Cobalt public APIs when datacenter IP is blocked."""
+    match = re.search(r'(?:v=|youtu\.be\/|shorts\/|embed\/|^)([0-9A-Za-z_-]{11})', url_or_id)
+    video_id = match.group(1) if match else url_or_id
+    if not video_id or len(video_id) != 11:
+        return None
+
+    watch_url = f"https://www.youtube.com/watch?v={video_id}"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+        'Accept': 'application/json',
+    }
+
+    # 1. Try Invidious instances
+    for instance in INVIDIOUS_INSTANCES:
+        try:
+            endpoint = f"{instance}/api/v1/videos/{video_id}"
+            req = urllib.request.Request(endpoint, headers=headers)
+            with urllib.request.urlopen(req, timeout=5) as response:
+                if response.status == 200:
+                    data = json.loads(response.read().decode('utf-8'))
+                    title = data.get("title") or f"YouTube_Video_{video_id}"
+                    uploader = data.get("author") or "YouTube Creator"
+                    duration = data.get("lengthSeconds") or 0
+
+                    thumbnails = data.get("videoThumbnails", [])
+                    thumb_url = thumbnails[-1].get("url") if thumbnails else f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+                    if thumb_url.startswith("/"):
+                        thumb_url = f"{instance}{thumb_url}"
+
+                    formats = []
+                    # Pre-muxed format streams (720p, 360p)
+                    for s in data.get("formatStreams", []):
+                        q = s.get("qualityLabel") or s.get("resolution") or "720p"
+                        h = 720 if "720" in q else (360 if "360" in q else 480)
+                        formats.append({
+                            "format_id": f"invidious_{q}",
+                            "url": s.get("url"),
+                            "ext": s.get("container", "mp4"),
+                            "height": h,
+                            "vcodec": "h264",
+                            "acodec": "aac",
+                        })
+
+                    # Adaptive streams (1080p, 4K, audio)
+                    for a in data.get("adaptiveFormats", []):
+                        q = a.get("qualityLabel") or ""
+                        type_str = a.get("type", "")
+                        if "video" in type_str:
+                            h = 1080 if "1080" in q else (2160 if "2160" in q else (720 if "720" in q else 480))
+                            formats.append({
+                                "format_id": f"invidious_{q}",
+                                "url": a.get("url"),
+                                "ext": a.get("container", "mp4"),
+                                "height": h,
+                            })
+                        elif "audio" in type_str:
+                            formats.append({
+                                "format_id": "invidious_audio",
+                                "url": a.get("url"),
+                                "ext": "mp3",
+                                "acodec": "mp3",
+                                "vcodec": "none",
+                            })
+
+                    if formats:
+                        logger.info(f"Successfully extracted YouTube video {video_id} via Invidious instance {instance}")
+                        return {
+                            "id": video_id,
+                            "title": title,
+                            "uploader": uploader,
+                            "thumbnail": thumb_url,
+                            "duration": duration,
+                            "formats": formats,
+                            "url": watch_url,
+                            "engine": "invidious",
+                        }
+        except Exception:
+            continue
+
+    # 2. Try Piped API instances
+    for instance in PIPED_INSTANCES:
+        try:
+            endpoint = f"{instance}/streams/{video_id}"
+            req = urllib.request.Request(endpoint, headers=headers)
+            with urllib.request.urlopen(req, timeout=5) as response:
+                if response.status == 200:
+                    data = json.loads(response.read().decode('utf-8'))
+                    title = data.get("title") or f"YouTube_Video_{video_id}"
+                    uploader = data.get("uploader") or "YouTube Creator"
+                    duration = data.get("duration") or 0
+                    thumb_url = data.get("thumbnailUrl") or f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+
+                    formats = []
+                    for v in data.get("videoStreams", []):
+                        q = v.get("quality") or "720p"
+                        h = 1080 if "1080" in q else (720 if "720" in q else 480)
+                        formats.append({
+                            "format_id": f"piped_{q}",
+                            "url": v.get("url"),
+                            "ext": "mp4",
+                            "height": h,
+                            "vcodec": "h264",
+                        })
+                    for a in data.get("audioStreams", []):
+                        formats.append({
+                            "format_id": "piped_audio",
+                            "url": a.get("url"),
+                            "ext": "mp3",
+                            "vcodec": "none",
+                        })
+
+                    if formats:
+                        logger.info(f"Successfully extracted YouTube video {video_id} via Piped instance {instance}")
+                        return {
+                            "id": video_id,
+                            "title": title,
+                            "uploader": uploader,
+                            "thumbnail": thumb_url,
+                            "duration": duration,
+                            "formats": formats,
+                            "url": watch_url,
+                            "engine": "piped",
+                        }
+        except Exception:
+            continue
+
+    # 3. Try YouTube oEmbed & Noembed fallback for metadata + Cobalt for streams
+    meta = None
+    for oe_url in [
+        f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json",
+        f"https://noembed.com/embed?url=https://www.youtube.com/watch?v={video_id}",
+    ]:
+        try:
+            req = urllib.request.Request(oe_url, headers=headers)
+            with urllib.request.urlopen(req, timeout=5) as response:
+                if response.status == 200:
+                    meta = json.loads(response.read().decode('utf-8'))
+                    if meta.get("title"):
+                        break
+        except Exception:
+            continue
+
+    if meta:
+        title = meta.get("title", f"YouTube_Video_{video_id}")
+        uploader = meta.get("author_name", "YouTube Creator")
+        thumb = meta.get("thumbnail_url", f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg")
+
+        cobalt_info = extract_cobalt_fallback(watch_url)
+        formats = []
+        if cobalt_info and cobalt_info.get("stream_url"):
+            formats.append({
+                "format_id": "cobalt_best",
+                "url": cobalt_info["stream_url"],
+                "ext": "mp4",
+                "height": 1080,
+            })
+            formats.append({
+                "format_id": "cobalt_audio",
+                "url": cobalt_info["stream_url"],
+                "ext": "mp3",
+                "vcodec": "none",
+            })
+        else:
+            formats.append({
+                "format_id": "best",
+                "url": watch_url,
+                "ext": "mp4",
+                "height": 720
+            })
+
+        return {
+            "id": video_id,
+            "title": title,
+            "uploader": uploader,
+            "thumbnail": thumb,
+            "duration": 0,
+            "formats": formats,
+            "url": watch_url,
+            "engine": "oembed_fallback",
+        }
+
+    return None
+
+
 def extract_media_info_direct(url: str) -> Dict[str, Any]:
     """Extracts metadata from any URL using configured yt-dlp with multi-client fallbacks."""
     u_lower = url.lower()
@@ -428,21 +730,22 @@ def extract_media_info_direct(url: str) -> Dict[str, Any]:
     # 1. YouTube multi-client fallback pipeline
     if "youtube.com" in u_lower or "youtu.be" in u_lower:
         client_attempts = [
-            ['android', 'ios'],
+            ['mweb', 'web'],
             ['tv_embedded', 'mweb'],
-            ['web_creator', 'android'],
-            ['android'],
+            ['web_creator', 'mweb'],
+            ['android', 'ios'],
             None  # Default yt-dlp
         ]
         last_err = None
         for clients in client_attempts:
             opts = get_ydl_opts_for_url(url, download=False)
             opts['extract_flat'] = False
+            opts['socket_timeout'] = 8  # Fast 8s timeout per attempt to avoid browser timeout
+            opts['retries'] = 2
             if clients:
                 opts['extractor_args'] = {
                     'youtube': {
                         'player_client': clients,
-                        'player_skip': ['webpage', 'configs'],
                     }
                 }
             else:
@@ -461,6 +764,11 @@ def extract_media_info_direct(url: str) -> Dict[str, Any]:
                 last_err = e
                 logger.warning(f"YouTube attempt with {clients} failed: {e}. Trying next strategy...")
                 continue
+
+        logger.warning(f"All yt-dlp clients failed on cloud IP ({last_err}). Calling Invidious/Piped/Cobalt fallback engine...")
+        yt_fb = extract_youtube_fallback(url)
+        if yt_fb:
+            return yt_fb
         raise last_err or Exception("Could not extract video metadata from this YouTube URL.")
 
     # 2. Instagram with embed fallback
@@ -509,21 +817,22 @@ def download_media_direct(
     # 1. YouTube multi-client download
     if "youtube.com" in u_lower or "youtu.be" in u_lower:
         client_attempts = [
-            ['android', 'ios'],
+            ['mweb', 'web'],
             ['tv_embedded', 'mweb'],
-            ['web_creator', 'android'],
-            ['android'],
+            ['web_creator', 'mweb'],
+            ['android', 'ios'],
             None
         ]
         last_err = None
         for clients in client_attempts:
             try:
                 opts = get_ydl_opts_for_url(url, quality=quality, download=True, output_path=output_path)
+                opts['socket_timeout'] = 30
+                opts['retries'] = 3
                 if clients:
                     opts['extractor_args'] = {
                         'youtube': {
                             'player_client': clients,
-                            'player_skip': ['webpage', 'configs'],
                         }
                     }
                 else:
@@ -560,6 +869,56 @@ def download_media_direct(
                 last_err = e
                 logger.warning(f"YouTube download with {clients} failed: {e}. Trying next...")
                 continue
+
+        # Fallback to direct stream download via Cobalt / Invidious / Piped if yt-dlp was blocked by cloud IP
+        logger.warning("yt-dlp download failed on cloud IP. Using YouTube stream fallback (Cobalt/Invidious)...")
+        is_audio = quality in ("audio", "mp3", "m4a")
+
+        # First try Cobalt stream directly
+        cobalt_info = extract_cobalt_fallback(url, is_audio=is_audio)
+        if cobalt_info and cobalt_info.get("stream_url"):
+            ext = "mp3" if is_audio else "mp4"
+            match = re.search(r'(?:v=|youtu\.be\/|shorts\/|embed\/|^)([0-9A-Za-z_-]{11})', url)
+            v_id = match.group(1) if match else "video"
+            safe_output = output_path.replace("%(title).80B", f"yt_{v_id}").replace("%(ext)s", ext)
+            req = urllib.request.Request(cobalt_info["stream_url"], headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            })
+            with urllib.request.urlopen(req, timeout=90) as resp, open(safe_output, 'wb') as out_f:
+                shutil.copyfileobj(resp, out_f)
+            if os.path.exists(safe_output) and os.path.getsize(safe_output) > 0:
+                return str(Path(safe_output).resolve())
+
+        # Then try Invidious/Piped fallback formats
+        yt_fb = extract_youtube_fallback(url)
+        if yt_fb and yt_fb.get("formats"):
+            target_stream = None
+            for f in yt_fb["formats"]:
+                if is_audio and f.get("vcodec") == "none" and f.get("url"):
+                    target_stream = f.get("url")
+                    break
+                elif not is_audio and f.get("url") and f.get("vcodec") != "none":
+                    target_stream = f.get("url")
+                    if quality.isdigit() and f.get("height") == int(quality):
+                        break
+
+            if not target_stream:
+                for f in yt_fb["formats"]:
+                    if f.get("url"):
+                        target_stream = f["url"]
+                        break
+
+            if target_stream:
+                ext = "mp3" if is_audio else "mp4"
+                safe_output = output_path.replace("%(title).80B", f"yt_{yt_fb['id']}").replace("%(ext)s", ext)
+                req = urllib.request.Request(target_stream, headers={
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                })
+                with urllib.request.urlopen(req, timeout=90) as resp, open(safe_output, 'wb') as out_f:
+                    shutil.copyfileobj(resp, out_f)
+                if os.path.exists(safe_output) and os.path.getsize(safe_output) > 0:
+                    return str(Path(safe_output).resolve())
+
         raise last_err or Exception("Downloaded media file could not be located on disk.")
 
     # 2. Instagram with embed direct download fallback
@@ -847,11 +1206,69 @@ async def api_health():
     return {"status": "online", "engine": "yt-dlp Universal + TeraBox", "app": "DownTG-Web", "version": "2.6.0"}
 
 
+@app.post("/api/admin/login")
+async def api_admin_login(req: AdminLoginRequest):
+    """Admin login with user: admin, Password: Rohit-admin5064@"""
+    if req.username.strip() == ADMIN_USERNAME and req.password.strip() == ADMIN_PASSWORD:
+        return {"success": True, "token": ADMIN_TOKEN, "message": "Admin authenticated successfully"}
+    return JSONResponse(status_code=401, content={"success": False, "error": "Invalid admin username or password"})
+
+
+@app.get("/api/admin/config")
+async def api_admin_get_config(authorization: Optional[str] = Header(None)):
+    """Fetches the current persistent TeraBox API Key and configuration."""
+    token = (authorization or "").replace("Bearer ", "").strip()
+    if token != ADMIN_TOKEN:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    cfg = load_admin_config()
+    return {"success": True, "config": cfg}
+
+
+@app.post("/api/admin/config")
+async def api_admin_save_config(req: AdminConfigRequest, authorization: Optional[str] = Header(None)):
+    """Saves TeraBox API Key and cookies persistently without editing code."""
+    token = (authorization or "").replace("Bearer ", "").strip()
+    if token != ADMIN_TOKEN:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    cfg = load_admin_config()
+    if req.terabox_api_key is not None:
+        cfg["terabox_api_key"] = req.terabox_api_key.strip()
+    if req.terabox_endpoint is not None and req.terabox_endpoint.strip():
+        cfg["terabox_endpoint"] = req.terabox_endpoint.strip()
+
+    save_admin_config(cfg)
+
+    # Save cookies if provided
+    if req.cookies_text and req.cookies_text.strip():
+        cookie_file = BASE_DIR / "cookies.txt"
+        cookie_file.write_text(req.cookies_text.strip(), encoding="utf-8")
+        logger.info(f"Updated cookies.txt from Admin Panel ({len(req.cookies_text)} characters)")
+
+    logger.info(f"Updated TeraBox API configuration from web Admin Panel")
+    return {
+        "success": True,
+        "message": "TeraBox API Key and settings updated successfully!",
+        "config": cfg
+    }
+
+
+@app.get("/admin")
+async def serve_admin():
+    """Serves the Admin Panel view."""
+    index_file = BASE_DIR / "index.html"
+    if not index_file.exists():
+        index_file = WEBSITE_DIR / "index.html"
+    if not index_file.exists():
+        raise HTTPException(status_code=404, detail="index.html not found")
+    return FileResponse(str(index_file))
+
+
 @app.get("/")
 async def serve_index():
-    index_file = WEBSITE_DIR / "index.html"
+    index_file = BASE_DIR / "index.html"
     if not index_file.exists():
-        index_file = BASE_DIR / "index.html"
+        index_file = WEBSITE_DIR / "index.html"
     if not index_file.exists():
         raise HTTPException(status_code=404, detail="index.html not found")
     return FileResponse(str(index_file))

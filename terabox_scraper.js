@@ -3,27 +3,60 @@
  * Dual Engine: Direct Ultra-Fast REST API + Headless Puppeteer Chromium Fallback
  */
 
+const fs = require('fs');
+const path = require('path');
 const https = require('https');
 let puppeteer = null;
 try {
   puppeteer = require('puppeteer');
 } catch (e) {}
 
-const SITE_URL = 'https://gregarious-haupia-5bced4.netlify.app/';
+let SITE_URL = 'https://gregarious-haupia-5bced4.netlify.app/';
+let EXTRACT_API = 'https://gregarious-haupia-5bced4.netlify.app/api/extract';
+let API_KEY = process.env.TERABOX_API_KEY || '';
+
+try {
+  const cfgPath = path.join(__dirname, 'data', 'terabox_config.json');
+  if (fs.existsSync(cfgPath)) {
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+    if (cfg.terabox_api_key) API_KEY = cfg.terabox_api_key;
+    if (cfg.terabox_endpoint) {
+      EXTRACT_API = cfg.terabox_endpoint;
+      SITE_URL = cfg.terabox_endpoint.replace(/\/api\/.*$/, '/');
+    }
+  }
+} catch (e) {}
+
+if (process.env.TERABOX_ENDPOINT) {
+  EXTRACT_API = process.env.TERABOX_ENDPOINT;
+  SITE_URL = process.env.TERABOX_ENDPOINT.replace(/\/api\/.*$/, '/');
+}
 
 /**
  * 1. Ultra-fast direct API extraction (responds in ~0.5s without browser overhead)
  */
 function directApiExtract(targetUrl) {
   return new Promise((resolve) => {
-    const postData = JSON.stringify({ url: targetUrl });
-    const req = https.request('https://gregarious-haupia-5bced4.netlify.app/api/extract', {
+    const postData = JSON.stringify({ url: targetUrl, key: API_KEY, api_key: API_KEY });
+    const headers = {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(postData),
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    };
+    if (API_KEY) {
+      headers['Authorization'] = 'Bearer ' + API_KEY;
+      headers['X-API-Key'] = API_KEY;
+    }
+
+    let transport = https;
+    try {
+      const parsed = new URL(EXTRACT_API);
+      if (parsed.protocol === 'http:') transport = require('http');
+    } catch (e) {}
+
+    const req = transport.request(EXTRACT_API, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(postData),
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      },
+      headers: headers,
       timeout: 15000
     }, (res) => {
       let body = '';

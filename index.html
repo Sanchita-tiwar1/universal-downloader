@@ -277,7 +277,109 @@
   <!-- Footer -->
   <footer class="border-t border-slate-200 dark:border-slate-800/80 py-8 text-center text-xs text-slate-400">
     <p>© 2026 DownTG — Universal Media Downloader. For educational and personal use only.</p>
+    <div class="mt-2.5 flex items-center justify-center gap-3">
+      <button id="openAdminModalBtn" class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-100 dark:bg-slate-900 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 text-slate-500 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 border border-slate-200 dark:border-slate-800 transition text-[11px] font-medium cursor-pointer">
+        <i class="fa-solid fa-shield-halved text-[10px]"></i>
+        <span>Admin Panel</span>
+      </button>
+    </div>
   </footer>
+
+  <!-- Admin Modal Overlay -->
+  <div id="adminModal" class="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-sm flex items-center justify-center p-4 hidden">
+    <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl max-w-lg w-full p-6 sm:p-8 shadow-2xl relative transition-all max-h-[90vh] overflow-y-auto">
+      <!-- Close Button -->
+      <button id="closeAdminModalBtn" class="absolute top-5 right-5 w-8 h-8 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 flex items-center justify-center transition cursor-pointer">
+        <i class="fa-solid fa-xmark"></i>
+      </button>
+
+      <!-- View 1: Admin Login -->
+      <div id="adminLoginView">
+        <div class="text-center mb-6">
+          <div class="w-12 h-12 rounded-2xl bg-indigo-500/10 text-indigo-500 flex items-center justify-center mx-auto mb-3 text-xl shadow-inner">
+            <i class="fa-solid fa-lock"></i>
+          </div>
+          <h2 class="text-xl font-bold text-slate-900 dark:text-slate-100">Admin Authentication</h2>
+          <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Sign in to manage TeraBox API key and downloader settings</p>
+        </div>
+
+        <div id="adminLoginAlert" class="p-3 mb-4 rounded-xl bg-red-500/10 border border-red-500/20 text-red-500 text-xs font-semibold hidden flex items-center gap-2">
+          <i class="fa-solid fa-circle-exclamation flex-shrink-0"></i>
+          <span id="adminLoginAlertText">Invalid username or password</span>
+        </div>
+
+        <form id="adminLoginForm" class="space-y-4">
+          <div>
+            <label class="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">Username</label>
+            <input type="text" id="adminUsernameInput" required value="admin" class="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 text-slate-900 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          </div>
+          <div>
+            <label class="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">Password</label>
+            <input type="password" id="adminPasswordInput" required placeholder="Enter password (Rohit-admin5064@)" class="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 text-slate-900 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          </div>
+          <button type="submit" id="adminLoginBtn" class="w-full py-3 rounded-xl gradient-bg text-white font-bold text-sm shadow-md shadow-indigo-500/20 hover:opacity-95 transition flex items-center justify-center gap-2 cursor-pointer">
+            <span>Sign In to Admin</span>
+            <i class="fa-solid fa-arrow-right text-xs"></i>
+          </button>
+        </form>
+      </div>
+
+      <!-- View 2: Admin Settings Dashboard -->
+      <div id="adminSettingsView" class="hidden">
+        <div class="flex items-center justify-between pb-4 mb-5 border-b border-slate-200 dark:border-slate-800">
+          <div>
+            <h2 class="text-lg font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2">
+              <i class="fa-solid fa-sliders text-indigo-500"></i>
+              <span>Admin Control Center</span>
+            </h2>
+            <p class="text-[11px] text-emerald-500 font-semibold flex items-center gap-1.5 mt-0.5">
+              <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+              <span>Signed in as admin</span>
+            </p>
+          </div>
+          <button id="adminLogoutBtn" class="text-xs text-rose-500 hover:text-rose-600 font-semibold px-3 py-1.5 rounded-xl bg-rose-500/10 border border-rose-500/20 transition cursor-pointer">
+            <i class="fa-solid fa-right-from-bracket mr-1"></i> Logout
+          </button>
+        </div>
+
+        <div id="adminSaveAlert" class="p-3 mb-4 rounded-xl text-xs font-semibold hidden flex items-center gap-2">
+          <i class="fa-solid fa-circle-check flex-shrink-0"></i>
+          <span id="adminSaveAlertText">Configuration updated successfully!</span>
+        </div>
+
+        <form id="adminSettingsForm" class="space-y-4">
+          <div>
+            <label class="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+              📦 TeraBox API Key
+            </label>
+            <input type="text" id="configTeraboxKey" placeholder="Paste your TeraBox API key here..." class="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <p class="text-[11px] text-slate-400 mt-1">Updates the active TeraBox API key immediately without editing code or restarting.</p>
+          </div>
+
+          <div>
+            <label class="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+              🌐 TeraBox Scraper Endpoint
+            </label>
+            <input type="url" id="configTeraboxEndpoint" placeholder="https://.../api/extract" class="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <p class="text-[11px] text-slate-400 mt-1">Direct endpoint used to resolve TeraBox share links.</p>
+          </div>
+
+          <div>
+            <label class="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+              🍪 YouTube / Instagram Cookies (Optional)
+            </label>
+            <textarea id="configCookiesText" rows="3" placeholder="Paste Netscape format cookies.txt text here to update cloud cookies..." class="w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500"></textarea>
+            <p class="text-[11px] text-slate-400 mt-0.5">Saves directly to server's <code>cookies.txt</code>.</p>
+          </div>
+
+          <button type="submit" id="adminSaveBtn" class="w-full py-3 rounded-xl gradient-bg text-white font-bold text-sm shadow-md shadow-indigo-500/20 hover:opacity-95 transition flex items-center justify-center gap-2 cursor-pointer">
+            <i class="fa-solid fa-floppy-disk"></i>
+            <span>Save & Apply Configuration</span>
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
 
   <!-- Frontend JavaScript Logic -->
   <script>
@@ -441,6 +543,169 @@
         submitBtn.classList.remove('opacity-75');
       }
     });
+
+    // Admin Modal Logic
+    const openAdminModalBtn = document.getElementById('openAdminModalBtn');
+    const closeAdminModalBtn = document.getElementById('closeAdminModalBtn');
+    const adminModal = document.getElementById('adminModal');
+    const adminLoginView = document.getElementById('adminLoginView');
+    const adminSettingsView = document.getElementById('adminSettingsView');
+    const adminLoginForm = document.getElementById('adminLoginForm');
+    const adminUsernameInput = document.getElementById('adminUsernameInput');
+    const adminPasswordInput = document.getElementById('adminPasswordInput');
+    const adminLoginAlert = document.getElementById('adminLoginAlert');
+    const adminLoginAlertText = document.getElementById('adminLoginAlertText');
+    const adminLogoutBtn = document.getElementById('adminLogoutBtn');
+    const adminSettingsForm = document.getElementById('adminSettingsForm');
+    const configTeraboxKey = document.getElementById('configTeraboxKey');
+    const configTeraboxEndpoint = document.getElementById('configTeraboxEndpoint');
+    const configCookiesText = document.getElementById('configCookiesText');
+    const adminSaveAlert = document.getElementById('adminSaveAlert');
+    const adminSaveAlertText = document.getElementById('adminSaveAlertText');
+    const adminSaveBtn = document.getElementById('adminSaveBtn');
+
+    const showAdminModal = async () => {
+      adminModal.classList.remove('hidden');
+      const token = sessionStorage.getItem('downtg_admin_token');
+      if (token) {
+        await loadAdminConfig(token);
+      } else {
+        adminLoginView.classList.remove('hidden');
+        adminSettingsView.classList.add('hidden');
+      }
+    };
+
+    const hideAdminModal = () => {
+      adminModal.classList.add('hidden');
+      adminLoginAlert.classList.add('hidden');
+      adminSaveAlert.classList.add('hidden');
+    };
+
+    if (openAdminModalBtn) openAdminModalBtn.addEventListener('click', showAdminModal);
+    if (closeAdminModalBtn) closeAdminModalBtn.addEventListener('click', hideAdminModal);
+    if (adminModal) {
+      adminModal.addEventListener('click', (e) => {
+        if (e.target === adminModal) hideAdminModal();
+      });
+    }
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && adminModal && !adminModal.classList.contains('hidden')) {
+        hideAdminModal();
+      }
+    });
+
+    if (window.location.hash === '#admin' || window.location.pathname === '/admin') {
+      showAdminModal();
+    }
+
+    // Admin Login Handler
+    if (adminLoginForm) {
+      adminLoginForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        adminLoginAlert.classList.add('hidden');
+        const u = adminUsernameInput.value.trim();
+        const p = adminPasswordInput.value.trim();
+
+        try {
+          const resp = await fetch(`${API_BASE}/api/admin/login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: u, password: p }),
+          });
+          const data = await resp.json();
+          if (!resp.ok || !data.success) {
+            throw new Error(data.error || 'Invalid credentials');
+          }
+          sessionStorage.setItem('downtg_admin_token', data.token);
+          await loadAdminConfig(data.token);
+        } catch (err) {
+          adminLoginAlertText.textContent = err.message || 'Login failed';
+          adminLoginAlert.classList.remove('hidden');
+        }
+      });
+    }
+
+    // Load Admin Config Helper
+    async function loadAdminConfig(token) {
+      try {
+        const resp = await fetch(`${API_BASE}/api/admin/config`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const data = await resp.json();
+        if (resp.ok && data.success) {
+          configTeraboxKey.value = data.config.terabox_api_key || '';
+          configTeraboxEndpoint.value = data.config.terabox_endpoint || 'https://gregarious-haupia-5bced4.netlify.app/api/extract';
+          adminLoginView.classList.add('hidden');
+          adminSettingsView.classList.remove('hidden');
+        } else {
+          sessionStorage.removeItem('downtg_admin_token');
+          adminLoginView.classList.remove('hidden');
+          adminSettingsView.classList.add('hidden');
+        }
+      } catch (e) {
+        adminLoginView.classList.remove('hidden');
+        adminSettingsView.classList.add('hidden');
+      }
+    }
+
+    // Save Admin Config Handler
+    if (adminSettingsForm) {
+      adminSettingsForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const token = sessionStorage.getItem('downtg_admin_token');
+        if (!token) {
+          showAdminModal();
+          return;
+        }
+
+        adminSaveBtn.disabled = true;
+        adminSaveBtn.classList.add('opacity-75');
+
+        try {
+          const resp = await fetch(`${API_BASE}/api/admin/config`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({
+              terabox_api_key: configTeraboxKey.value.trim(),
+              terabox_endpoint: configTeraboxEndpoint.value.trim(),
+              cookies_text: configCookiesText.value.trim()
+            })
+          });
+
+          const data = await resp.json();
+          if (!resp.ok || !data.success) {
+            throw new Error(data.error || 'Failed to update settings');
+          }
+
+          adminSaveAlert.className = 'p-3 mb-4 rounded-xl text-xs font-semibold flex items-center gap-2 bg-emerald-500/10 border border-emerald-500/20 text-emerald-500';
+          adminSaveAlertText.textContent = '✅ TeraBox API key and configuration updated and active!';
+          adminSaveAlert.classList.remove('hidden');
+          configCookiesText.value = '';
+          setTimeout(() => adminSaveAlert.classList.add('hidden'), 4000);
+        } catch (err) {
+          adminSaveAlert.className = 'p-3 mb-4 rounded-xl text-xs font-semibold flex items-center gap-2 bg-red-500/10 border border-red-500/20 text-red-500';
+          adminSaveAlertText.textContent = err.message || 'Error saving settings';
+          adminSaveAlert.classList.remove('hidden');
+        } finally {
+          adminSaveBtn.disabled = false;
+          adminSaveBtn.classList.remove('opacity-75');
+        }
+      });
+    }
+
+    // Admin Logout Handler
+    if (adminLogoutBtn) {
+      adminLogoutBtn.addEventListener('click', () => {
+        sessionStorage.removeItem('downtg_admin_token');
+        adminSettingsView.classList.add('hidden');
+        adminLoginView.classList.remove('hidden');
+        adminPasswordInput.value = '';
+      });
+    }
   </script>
 </body>
 </html>
