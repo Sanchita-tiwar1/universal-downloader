@@ -6,6 +6,7 @@ import shutil
 import asyncio
 import logging
 import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
@@ -188,11 +189,12 @@ def get_ydl_opts_for_url(
         opts['js_runtimes'] = {'node': {'path': str(node_bin)}}
 
     # Platform-specific options & cookies:
-    # 1. YouTube (Uses visionos, android, default clients to unlock all resolutions without bot blocks)
+    # 1. YouTube (Uses android & ios InnerTube clients to bypass cloud bot detection & player response blocks)
     if "youtube.com" in u_lower or "youtu.be" in u_lower:
         opts['extractor_args'] = {
             'youtube': {
-                'player_client': ['visionos', 'android', 'default'],
+                'player_client': ['android', 'ios'],
+                'player_skip': ['webpage', 'configs'],
             }
         }
         cookie_candidates = [
@@ -220,8 +222,9 @@ def get_ydl_opts_for_url(
             'Referer': 'https://www.instagram.com/',
         }
         cookie_candidates = [
-            BASE_DIR / "cooky" / "instagram" / "cookies.txt",
             BASE_DIR / "cookies.txt",
+            BASE_DIR / "cooky" / "instagram" / "cookies.txt",
+            BASE_DIR / "instagram_cookies.txt",
             BASE_DIR.parent / "DownTG-Bot" / "cooky" / "instagram" / "cookies.txt",
             BASE_DIR.parent / "DownTG-Bot" / "cookies.txt",
         ]
@@ -360,20 +363,137 @@ async def scrape_terabox_direct(url: str) -> Dict[str, Any]:
     return data
 
 
+def extract_instagram_embed_sync(url: str) -> Optional[Dict[str, Any]]:
+    """Extracts public Instagram reel or post direct video URL via public embed."""
+    match = re.search(r'/(?:reel|reels|p)/([A-Za-z0-9_-]+)', url)
+    if not match:
+        return None
+    shortcode = match.group(1)
+    embed_url = f"https://www.instagram.com/reel/{shortcode}/embed/captioned/"
+    headers = {
+        'User-Agent': (
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+            'AppleWebKit/537.36 (KHTML, like Gecko) '
+            'Chrome/126.0.0.0 Safari/537.36'
+        ),
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+    }
+    req = urllib.request.Request(embed_url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=12) as response:
+            html = response.read().decode('utf-8', errors='ignore')
+            v_match = re.search(r'\\"video_url\\":\s*\\"([^\\"]+)\\"', html)
+            if not v_match:
+                v_match = re.search(r'"video_url":\s*"([^"]+)"', html)
+            if not v_match:
+                v_match = re.search(r'<video[^>]+src="([^"]+)"', html)
+
+            if v_match:
+                video_url = v_match.group(1).replace(r'\u0026', '&').replace('\\/', '/')
+                thumb_match = re.search(r'\\"display_url\\":\s*\\"([^\\"]+)\\"', html) or re.search(r'<img[^>]+class="EmbeddedMediaImage"[^>]+src="([^"]+)"', html)
+                thumbnail = thumb_match.group(1).replace(r'\u0026', '&').replace('\\/', '/') if thumb_match else ""
+                caption_match = re.search(r'<div class="Caption"[^>]*>(.*?)</div>', html, re.DOTALL)
+                caption = re.sub(r'<[^>]+>', '', caption_match.group(1)).strip() if caption_match else "Instagram Reel"
+                caption = caption[:80] if caption else "Instagram Reel"
+
+                return {
+                    "id": shortcode,
+                    "title": caption,
+                    "uploader": "Instagram Creator",
+                    "thumbnail": thumbnail,
+                    "duration": 0,
+                    "url": video_url,
+                    "formats": [
+                        {
+                            "format_id": "best",
+                            "url": video_url,
+                            "ext": "mp4",
+                            "vcodec": "h264",
+                            "acodec": "aac",
+                            "height": 1080,
+                        }
+                    ],
+                    "direct_url": video_url,
+                }
+    except Exception as e:
+        logger.warning(f"Instagram embed extraction fallback error: {e}")
+    return None
+
+
 def extract_media_info_direct(url: str) -> Dict[str, Any]:
-    """Extracts metadata from any URL using configured yt-dlp."""
+    """Extracts metadata from any URL using configured yt-dlp with multi-client fallbacks."""
+    u_lower = url.lower()
+
+    # 1. YouTube multi-client fallback pipeline
+    if "youtube.com" in u_lower or "youtu.be" in u_lower:
+        client_attempts = [
+            ['android', 'ios'],
+            ['tv_embedded', 'mweb'],
+            ['web_creator', 'android'],
+            ['android'],
+            None  # Default yt-dlp
+        ]
+        last_err = None
+        for clients in client_attempts:
+            opts = get_ydl_opts_for_url(url, download=False)
+            opts['extract_flat'] = False
+            if clients:
+                opts['extractor_args'] = {
+                    'youtube': {
+                        'player_client': clients,
+                        'player_skip': ['webpage', 'configs'],
+                    }
+                }
+            else:
+                opts.pop('extractor_args', None)
+
+            try:
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                    if info:
+                        if 'entries' in info and info['entries']:
+                            for entry in info['entries']:
+                                if entry:
+                                    return entry
+                        return info
+            except Exception as e:
+                last_err = e
+                logger.warning(f"YouTube attempt with {clients} failed: {e}. Trying next strategy...")
+                continue
+        raise last_err or Exception("Could not extract video metadata from this YouTube URL.")
+
+    # 2. Instagram with embed fallback
+    if "instagram.com" in u_lower:
+        try:
+            opts = get_ydl_opts_for_url(url, download=False)
+            opts['extract_flat'] = False
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                if info:
+                    if 'entries' in info and info['entries']:
+                        for entry in info['entries']:
+                            if entry:
+                                return entry
+                    return info
+        except Exception as ig_err:
+            logger.warning(f"yt-dlp Instagram extraction failed: {ig_err}. Attempting embed fallback...")
+            fallback_info = extract_instagram_embed_sync(url)
+            if fallback_info:
+                return fallback_info
+            raise ig_err
+
+    # 3. Standard extractor for all other platforms
     opts = get_ydl_opts_for_url(url, download=False)
     opts['extract_flat'] = False
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=False)
         if not info:
             raise Exception("Could not extract video metadata from this URL.")
-        # Unwrap playlists or multi-entries to the first media entry
         if 'entries' in info and info['entries']:
             for entry in info['entries']:
                 if entry:
-                    info = entry
-                    break
+                    return entry
         return info
 
 
@@ -383,7 +503,102 @@ def download_media_direct(
     quality: str = "best",
     format_selector: Optional[str] = None
 ) -> str:
-    """Downloads media and merges video/audio into final mp4/mp3 file."""
+    """Downloads media and merges video/audio into final mp4/mp3 file with multi-client fallbacks."""
+    u_lower = url.lower()
+
+    # 1. YouTube multi-client download
+    if "youtube.com" in u_lower or "youtu.be" in u_lower:
+        client_attempts = [
+            ['android', 'ios'],
+            ['tv_embedded', 'mweb'],
+            ['web_creator', 'android'],
+            ['android'],
+            None
+        ]
+        last_err = None
+        for clients in client_attempts:
+            try:
+                opts = get_ydl_opts_for_url(url, quality=quality, download=True, output_path=output_path)
+                if clients:
+                    opts['extractor_args'] = {
+                        'youtube': {
+                            'player_client': clients,
+                            'player_skip': ['webpage', 'configs'],
+                        }
+                    }
+                else:
+                    opts.pop('extractor_args', None)
+
+                if format_selector:
+                    opts['format'] = f"{format_selector}/bestvideo+bestaudio/best[ext=mp4]/best"
+                    opts['merge_output_format'] = 'mp4'
+
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    downloaded_file = None
+                    if 'requested_downloads' in info and info['requested_downloads']:
+                        downloaded_file = info['requested_downloads'][0].get('filepath')
+                    if not downloaded_file or not os.path.exists(downloaded_file):
+                        filename = ydl.prepare_filename(info)
+                        if quality in ("audio", "mp3"):
+                            filename = os.path.splitext(filename)[0] + ".mp3"
+                        elif quality == "m4a":
+                            filename = os.path.splitext(filename)[0] + ".m4a"
+                        elif opts.get('merge_output_format') == 'mp4':
+                            filename = os.path.splitext(filename)[0] + ".mp4"
+                        if os.path.exists(filename):
+                            downloaded_file = filename
+                    if not downloaded_file or not os.path.exists(downloaded_file):
+                        prefix = os.path.basename(output_path).split("%")[0]
+                        for f in DOWNLOAD_DIR.glob(f"{prefix}*"):
+                            if f.exists() and f.is_file() and f.stat().st_size > 0 and not f.name.endswith(".part"):
+                                downloaded_file = str(f)
+                                break
+                    if downloaded_file and os.path.exists(downloaded_file):
+                        return str(Path(downloaded_file).resolve())
+            except Exception as e:
+                last_err = e
+                logger.warning(f"YouTube download with {clients} failed: {e}. Trying next...")
+                continue
+        raise last_err or Exception("Downloaded media file could not be located on disk.")
+
+    # 2. Instagram with embed direct download fallback
+    if "instagram.com" in u_lower:
+        try:
+            opts = get_ydl_opts_for_url(url, quality=quality, download=True, output_path=output_path)
+            if format_selector:
+                opts['format'] = f"{format_selector}/bestvideo+bestaudio/best[ext=mp4]/best"
+                opts['merge_output_format'] = 'mp4'
+
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                downloaded_file = None
+                if 'requested_downloads' in info and info['requested_downloads']:
+                    downloaded_file = info['requested_downloads'][0].get('filepath')
+                if not downloaded_file or not os.path.exists(downloaded_file):
+                    filename = ydl.prepare_filename(info)
+                    if opts.get('merge_output_format') == 'mp4':
+                        filename = os.path.splitext(filename)[0] + ".mp4"
+                    if os.path.exists(filename):
+                        downloaded_file = filename
+                if downloaded_file and os.path.exists(downloaded_file):
+                    return str(Path(downloaded_file).resolve())
+        except Exception as ig_dl_err:
+            logger.warning(f"yt-dlp Instagram download failed ({ig_dl_err}). Using direct embed fallback...")
+            fb_info = extract_instagram_embed_sync(url)
+            if fb_info and fb_info.get("direct_url"):
+                d_url = fb_info["direct_url"]
+                safe_output = output_path.replace("%(title).80B", f"ig_{fb_info['id']}").replace("%(ext)s", "mp4")
+                req = urllib.request.Request(d_url, headers={
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36'
+                })
+                with urllib.request.urlopen(req, timeout=30) as resp, open(safe_output, 'wb') as out_f:
+                    shutil.copyfileobj(resp, out_f)
+                if os.path.exists(safe_output) and os.path.getsize(safe_output) > 0:
+                    return str(Path(safe_output).resolve())
+            raise ig_dl_err
+
+    # 3. Standard download for all other platforms
     opts = get_ydl_opts_for_url(url, quality=quality, download=True, output_path=output_path)
 
     if format_selector:
