@@ -1,0 +1,16 @@
+# Netlify configuration for DownTG Universal Web
+[build]
+  publish = "."
+
+# Proxy API requests to your Python backend (e.g. AWS EC2, VPS, or Railway)
+# Replace YOUR_BACKEND_SERVER_URL with your actual server IP or domain (e.g. http://16.176.14.241:8000)
+[[redirects]]
+  from = "/api/*"
+  to = "http://YOUR_BACKEND_IP:8000/api/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
