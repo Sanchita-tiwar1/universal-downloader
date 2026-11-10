@@ -1,0 +1,12 @@
+{
+  "name": "downtg-bot",
+  "version": "1.0.0",
+  "description": "Universal Telegram Media Downloader Bot with Puppeteer TeraBox Scraper",
+  "main": "terabox_scraper.js",
+  "scripts": {
+    "test-terabox": "node terabox_scraper.js"
+  },
+  "dependencies": {
+    "puppeteer": "^24.4.0"
+  }
+}
