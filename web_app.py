@@ -1023,6 +1023,7 @@ async def api_extract(req: ExtractRequest):
             tb_data = await scrape_terabox_direct(url)
             title = tb_data.get("title", "TeraBox File")
             size_str = tb_data.get("size") or ""
+            tb_stream = tb_data.get("stream_url") or tb_data.get("media_url") or tb_data.get("download_url") or ""
             video_formats = [
                 {
                     "id": "best",
@@ -1047,6 +1048,8 @@ async def api_extract(req: ExtractRequest):
                 "duration": "N/A",
                 "thumbnail": tb_data.get("thumbnail") or "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&w=600&q=80",
                 "platform": "📦 TeraBox",
+                "stream_url": tb_stream,
+                "embed_url": tb_stream,
                 "video_formats": video_formats,
                 "audio_formats": audio_formats,
                 "qualities": video_formats + audio_formats,
@@ -1063,8 +1066,27 @@ async def api_extract(req: ExtractRequest):
         duration_str = format_duration(info.get("duration"))
         badge = get_platform_badge(url)
 
-        # Detect available video resolutions
+        # Detect live watch / stream URL and embed URL
+        stream_url = ""
+        embed_url = ""
+        u_low = url.lower()
+        if "youtube.com" in u_low or "youtu.be" in u_low:
+            m_yt = re.search(r'(?:v=|youtu\.be\/|shorts\/|embed\/|^)([0-9A-Za-z_-]{11})', url)
+            if m_yt:
+                embed_url = f"https://www.youtube-nocookie.com/embed/{m_yt.group(1)}?autoplay=1&rel=0"
+
         formats = info.get("formats", [])
+        for f in formats:
+            f_url = f.get("url") or ""
+            if f_url and f.get("vcodec") != "none" and not f_url.endswith(".m3u8"):
+                stream_url = f_url
+                break
+        if not stream_url and info.get("direct_url"):
+            stream_url = info["direct_url"]
+        if not stream_url and info.get("url") and not info["url"].startswith("http://127.0.0.1") and "manifest" not in info["url"]:
+            stream_url = info["url"]
+
+        # Detect available video resolutions
         heights = set()
         for f in formats:
             h = f.get("height")
@@ -1111,6 +1133,8 @@ async def api_extract(req: ExtractRequest):
             "duration": duration_str,
             "thumbnail": thumbnail,
             "platform": badge,
+            "stream_url": stream_url or "",
+            "embed_url": embed_url or "",
             "video_formats": video_formats,
             "audio_formats": audio_formats,
             "qualities": video_formats + audio_formats,
