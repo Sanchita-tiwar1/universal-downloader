@@ -16,6 +16,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import yt_dlp
 
+try:
+    import youtube_resolver
+except ImportError:
+    youtube_resolver = None
+
 # Base directory for the web app
 BASE_DIR = Path(__file__).resolve().parent
 DOWNLOAD_DIR = BASE_DIR / "downloads"
@@ -243,11 +248,11 @@ def get_ydl_opts_for_url(
         opts['js_runtimes'] = {'node': {'path': str(node_bin)}}
 
     # Platform-specific options & cookies:
-    # 1. YouTube (Uses modern mweb/web client and verifies cookies belong to youtube.com)
+    # 1. YouTube (Uses android, ios, web_safari client from SaveFrom method)
     if "youtube.com" in u_lower or "youtu.be" in u_lower:
         opts['extractor_args'] = {
             'youtube': {
-                'player_client': ['mweb', 'web'],
+                'player_client': ['android', 'ios', 'web_safari'],
             }
         }
         cookie_candidates = [
@@ -506,16 +511,17 @@ COBALT_INSTANCES = [
 ]
 
 
-def extract_cobalt_fallback(url: str, is_audio: bool = False) -> Optional[Dict[str, Any]]:
+def extract_cobalt_fallback(url: str, is_audio: bool = False, quality: str = "1080") -> Optional[Dict[str, Any]]:
     """Fetches direct video or audio stream via Cobalt API instances."""
     headers = {
         'Accept': 'application/json',
         'Content-Type': 'application/json',
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
     }
+    target_q = quality if (isinstance(quality, str) and quality.isdigit()) else "1080"
     payload = {
         "url": url,
-        "videoQuality": "1080",
+        "videoQuality": target_q,
         "downloadMode": "audio" if is_audio else "auto",
         "youtubeVideoCodec": "h264"
     }
@@ -786,29 +792,45 @@ def extract_media_info_direct(url: str) -> Dict[str, Any]:
     """Extracts metadata from any URL with sub-second response times."""
     u_lower = url.lower()
 
-    # 1. YouTube instant extraction path (responds in ~0.5s - 1.5s)
+    # 1. YouTube extraction path
     if "youtube.com" in u_lower or "youtu.be" in u_lower:
-        # Step A: Quick 2.5s yt-dlp probe (one try only, no heavy retries)
-        opts = get_ydl_opts_for_url(url, download=False)
-        opts['extract_flat'] = False
-        opts['socket_timeout'] = 2.5
-        opts['retries'] = 0
-        opts['extractor_args'] = {
-            'youtube': {
-                'player_client': ['mweb', 'web'],
-            }
-        }
-        try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                if info:
-                    if 'entries' in info and info['entries']:
-                        for entry in info['entries']:
-                            if entry:
-                                return entry
-                    return info
-        except Exception as e:
-            logger.info(f"Fast yt-dlp attempt skipped ({e}); using instant YouTube engine.")
+        # Step A: Use youtube_resolver (android, ios, web_safari client from SaveFrom method)
+        if youtube_resolver:
+            try:
+                res_data = youtube_resolver.resolve(url)
+                if res_data and res_data.get("title"):
+                    v_formats = []
+                    for f in res_data.get("formats", []):
+                        h = f.get("height")
+                        if not h and "p" in str(f.get("quality", "")):
+                            m_p = re.search(r'(\d+)p', str(f.get("quality", "")))
+                            if m_p:
+                                h = int(m_p.group(1))
+                        v_formats.append({
+                            "format_id": str(f.get("itag") or "best"),
+                            "url": f.get("url"),
+                            "ext": f.get("ext", "mp4"),
+                            "height": h,
+                            "vcodec": f.get("vcodec") or ("h264" if f.get("has_video") else "none"),
+                            "acodec": f.get("acodec") or ("aac" if f.get("has_audio") else "none"),
+                            "filesize": f.get("size"),
+                        })
+                    m_yt = re.search(r'(?:v=|youtu\.be\/|shorts\/|embed\/|^)([0-9A-Za-z_-]{11})', url)
+                    yt_id = m_yt.group(1) if m_yt else res_data.get("id", "")
+                    return {
+                        "id": yt_id,
+                        "title": res_data.get("title"),
+                        "uploader": res_data.get("uploader") or "YouTube Creator",
+                        "duration": res_data.get("duration") or 0,
+                        "thumbnail": res_data.get("thumbnail") or f"https://i.ytimg.com/vi/{yt_id}/hqdefault.jpg",
+                        "formats": v_formats,
+                        "available_resolutions": res_data.get("available_resolutions", [1080, 720, 480, 360]),
+                        "url": url,
+                        "embed_url": f"https://www.youtube-nocookie.com/embed/{yt_id}?autoplay=1&rel=0",
+                        "engine": "youtube_resolver",
+                    }
+            except Exception as e:
+                logger.info(f"youtube_resolver probe error ({e}); switching to instant engine...")
 
         # Step B: Instant 150ms official oEmbed metadata
         fast_info = extract_youtube_fast(url)
@@ -866,9 +888,21 @@ def download_media_direct(
 
     # 1. YouTube multi-client download
     if "youtube.com" in u_lower or "youtu.be" in u_lower:
+        if youtube_resolver:
+            try:
+                h = int(quality) if quality.isdigit() else (1080 if quality == "best" else 720)
+                prefix = os.path.basename(output_path).split("%")[0]
+                target_out = str(DOWNLOAD_DIR / f"{prefix}yt_download.%(ext)s")
+                youtube_resolver.download_merged(url, height=h, quality=quality, out=target_out)
+                for f in DOWNLOAD_DIR.glob(f"{prefix}*"):
+                    if f.exists() and f.is_file() and f.stat().st_size > 0 and not f.name.endswith(".part"):
+                        return str(Path(f).resolve())
+            except Exception as e:
+                logger.info(f"youtube_resolver download probe skipped ({e}). Trying fallback...")
+
         client_attempts = [
+            ['android', 'ios', 'web_safari'],
             ['mweb', 'web'],
-            ['tv_embedded', 'mweb'],
         ]
         last_err = None
         for clients in client_attempts:
@@ -922,7 +956,7 @@ def download_media_direct(
         is_audio = quality in ("audio", "mp3", "m4a")
 
         # First try Cobalt stream directly
-        cobalt_info = extract_cobalt_fallback(url, is_audio=is_audio)
+        cobalt_info = extract_cobalt_fallback(url, is_audio=is_audio, quality=quality)
         if cobalt_info and cobalt_info.get("stream_url"):
             ext = "mp3" if is_audio else "mp4"
             match = re.search(r'(?:v=|youtu\.be\/|shorts\/|embed\/|^)([0-9A-Za-z_-]{11})', url)
@@ -1133,6 +1167,8 @@ async def api_extract(req: ExtractRequest):
         if not stream_url and info.get("url") and not info["url"].startswith("http://127.0.0.1") and "manifest" not in info["url"]:
             stream_url = info["url"]
 
+        is_yt = "youtube.com" in u_low or "youtu.be" in u_low
+
         # Detect available video resolutions
         heights = set()
         for f in formats:
@@ -1152,17 +1188,17 @@ async def api_extract(req: ExtractRequest):
             video_formats.append({"id": "2160", "label": "🎬 4K Ultra HD (2160p)", "badge": "4K", "type": "video"})
         if any(1440 <= h < 2160 for h in heights):
             video_formats.append({"id": "1440", "label": "🎬 2K Quad HD (1440p)", "badge": "2K", "type": "video"})
-        if any(1080 <= h < 1440 for h in heights):
+        if is_yt or any(1080 <= h < 1440 for h in heights) or any(h == 1080 for h in heights):
             video_formats.append({"id": "1080", "label": "🎬 1080p Full HD", "badge": "1080p", "type": "video"})
-        if any(720 <= h < 1080 for h in heights):
+        if is_yt or any(720 <= h < 1080 for h in heights) or any(h == 720 for h in heights):
             video_formats.append({"id": "720", "label": "📺 720p HD", "badge": "720p", "type": "video"})
-        if any(480 <= h < 720 for h in heights):
+        if is_yt or any(480 <= h < 720 for h in heights) or any(h == 480 for h in heights):
             video_formats.append({"id": "480", "label": "📱 480p SD", "badge": "480p", "type": "video"})
-        if any(360 <= h < 480 for h in heights):
+        if is_yt or any(360 <= h < 480 for h in heights) or any(h == 360 for h in heights):
             video_formats.append({"id": "360", "label": "📱 360p Low", "badge": "360p", "type": "video"})
 
         # Default fallback options if platform doesn't expose separate heights (Instagram, TikTok, Twitter)
-        if len(video_formats) == 1:
+        if len(video_formats) <= 2 and not is_yt:
             video_formats.append({"id": "720", "label": "🎬 Standard HD (720p)", "badge": "HD", "type": "video"})
             video_formats.append({"id": "480", "label": "📱 Standard SD (480p)", "badge": "SD", "type": "video"})
 
